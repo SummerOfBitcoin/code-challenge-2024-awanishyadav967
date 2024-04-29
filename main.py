@@ -1,224 +1,121 @@
-import os
-import json
 import hashlib
-import time
-from typing import List, Tuple, Dict
+import json
+import os
+from collections import OrderedDict
+import sys
 
-# Define the difficulty target
-DIFFICULTY_TARGET = "0000ffff00000000000000000000000000000000000000000000000000000000"
-BLOCK_REWARD = 50  # Assuming a block reward of 50 bitcoins
-
-# Helper functions
-def double_sha256(data: bytes) -> bytes:
-    """
-    Compute the double SHA-256 hash of the given data.
-    """
-    hash1 = hashlib.sha256(data).digest()
-    hash2 = hashlib.sha256(hash1).digest()
-    return hash2
-
-def validate_transaction(transaction: Dict, mempool: Dict[str, Tuple[int, Dict]]) -> bool:
-    """
-    Validate a Bitcoin transaction using the mempool.
-    """
-    # Check if the transaction has at least one input
-    inputs = transaction.get("vin", [])
-    if not inputs:
+# Transaction validation
+def validate_transaction(transaction):
+    if 'inputs' not in transaction or 'outputs' not in transaction:
         return False
 
-    # Check if the transaction has at least one output
-    outputs = transaction.get("vout", [])
-    if not outputs:
+    inputs = transaction.get('inputs', [])
+    outputs = transaction.get('outputs', [])
+
+    if not inputs or not outputs:
         return False
 
-    # Check if the sum of input values is greater than or equal to the sum of output values
-    input_value = sum(validate_input(input_data, transaction, mempool) for input_data in inputs)
-    output_value = sum(output.get("value", 0) for output in outputs)
-    if input_value < output_value:
-        return False
-
-    # Check if the transaction version is valid
-    if transaction.get("version", 0) != 1:
-        return False
-
-    # Check if the locktime is valid
-    if transaction.get("locktime", 0) < 0:
+    input_sum = sum(inp.get('value', 0) for inp in inputs)
+    output_sum = sum(out.get('value', 0) for out in outputs)
+    if input_sum < output_sum:
         return False
 
     return True
 
-def validate_input(input_data: Dict, transaction: Dict, mempool: Dict[str, Tuple[int, Dict]]) -> int:
-    """
-    Validate an input and return its value using the mempool.
-    """
-    # Check if the input has a valid previous output reference
-    prev_out = input_data.get("prevout")
-    if not prev_out or not isinstance(prev_out, dict):
-        return 0
-
-    prev_tx_id = prev_out.get("txid")
-    prev_tx_index = prev_out.get("voutIndex")
-
-    if prev_tx_id is None or prev_tx_index is None:
-        return 0
-
-    prev_tx_info = mempool.get(prev_tx_id)
-    if prev_tx_info is None:
-        return 0
-
-    prev_tx_value, prev_tx = prev_tx_info
-    prev_output = prev_tx.get("vout", [])
-
-    if prev_tx_index >= len(prev_output):
-        return 0
-
-    prev_output_value = prev_output[prev_tx_index].get("value", 0)
-
-    # Verify the signature script against the public key script
-    # (Omitted for simplicity)
-
-    return prev_output_value
-
-def calculate_merkle_root(transactions: List[dict]) -> str:
-    """
-    Calculate the Merkle root of the given transactions.
-    """
-    transaction_hashes = [double_sha256(json.dumps(tx).encode()) for tx in transactions]
-
-    while len(transaction_hashes) > 1:
-        if len(transaction_hashes) % 2 != 0:
-            transaction_hashes.append(transaction_hashes[-1])
-
-        new_hashes = []
-        for i in range(0, len(transaction_hashes), 2):
-            combined_hash = double_sha256(transaction_hashes[i] + transaction_hashes[i + 1])
-            new_hashes.append(combined_hash)
-
-        transaction_hashes = new_hashes
-
-    return transaction_hashes[0].hex()
-
-def construct_block_header(prev_block_hash: str, merkle_root: str, timestamp: int, nonce: int) -> bytes:
-    """
-    Construct the block header according to the Bitcoin protocol.
-    """
-    block_header = (
-        bytes.fromhex(prev_block_hash)
-        + bytes.fromhex(merkle_root)
-        + timestamp.to_bytes(4, byteorder="little")
-        + nonce.to_bytes(4, byteorder="little")
+# Construct block header
+def construct_block_header(prev_block_hash, merkle_root, timestamp, difficulty_target, nonce):
+    header = OrderedDict([
+        ('version', 1),
+        ('prev_block_hash', bytes.fromhex(prev_block_hash)),
+        ('merkle_root', bytes.fromhex(merkle_root)),
+        ('timestamp', timestamp),
+        ('difficulty_target', difficulty_target),
+        ('nonce', nonce)
+    ])
+    header_bytes = b''.join(
+        str(value).encode() if isinstance(value, int) else
+        value.encode() if isinstance(value, str) else
+        value
+        for value in header.values()
     )
-    return block_header
+    return header_bytes
 
-def mine_block(prev_block_hash: str, transactions: List[dict], total_fees: int) -> Tuple[str, int, List[str]]:
-    """
-    Mine a new block by finding a valid nonce that produces a block hash below the target difficulty.
-    """
-    coinbase_transaction = create_coinbase_transaction(total_fees)
-    transactions = [coinbase_transaction] + transactions
+# Construct coinbase transaction
+def construct_coinbase_transaction(block_height, fees):
+    coinbase_tx = {
+        'txid': 'coinbase_tx',
+        'inputs': [{'value': 50 + fees}],
+        'outputs': [{'value': 50 + fees}]
+    }
+    return coinbase_tx
 
-    merkle_root = calculate_merkle_root(transactions)
-    timestamp = int(time.time())
+# Calculate merkle root
+def calculate_merkle_root(transactions):
+    tx_hashes = [hashlib.sha256(json.dumps(tx).encode()).hexdigest() for tx in transactions]
+
+    while len(tx_hashes) > 1:
+        new_hashes = []
+        for i in range(0, len(tx_hashes), 2):
+            hash1 = tx_hashes[i]
+            hash2 = tx_hashes[i + 1] if i + 1 < len(tx_hashes) else hash1
+            new_hashes.append(hashlib.sha256((hash1 + hash2).encode()).hexdigest())
+        tx_hashes = new_hashes
+
+    return tx_hashes[0]
+
+# Mine block
+def mine_block(mempool_transactions, prev_block_hash, difficulty_target):
+    valid_transactions = [tx for tx in mempool_transactions if validate_transaction(tx)]
+    fees = sum(sum(inp.get('value', 0) for inp in tx.get('inputs', [])) - sum(out.get('value', 0) for out in tx.get('outputs', [])) for tx in valid_transactions)
+    block_height = 1
+    coinbase_tx = construct_coinbase_transaction(block_height, fees)
+    merkle_root = calculate_merkle_root([coinbase_tx] + valid_transactions)
     nonce = 0
+    timestamp = 1234567890
 
     while True:
-        block_header = construct_block_header(prev_block_hash, merkle_root, timestamp, nonce)
-        block_hash = double_sha256(block_header).hex()
-
-        if block_hash < DIFFICULTY_TARGET:
-            transaction_ids = [double_sha256(json.dumps(tx).encode()).hex() for tx in transactions]
-            return block_hash, nonce, transaction_ids
-
+        block_header = construct_block_header(prev_block_hash, merkle_root, timestamp, difficulty_target, nonce)
+        block_hash = hashlib.sha256(block_header).hexdigest()
+        if int(block_hash, 16) < difficulty_target:
+            break
         nonce += 1
 
-def create_coinbase_transaction(fees: int) -> dict:
-    """
-    Create the coinbase transaction for the new block.
-    """
-    coinbase_transaction = {
-        "inputs": [],
-        "outputs": [{"value": BLOCK_REWARD + fees, "script": ""}],
-    }
-    return coinbase_transaction
+    return block_header.hex(), coinbase_tx, [tx['txid'] for tx in valid_transactions]
 
-def select_transactions(mempool: Dict[str, Tuple[int, Dict]]) -> List[dict]:
-    """
-    Select valid transactions from the mempool.
-    """
-    selected_transactions = []
-    total_fees = 0
-    block_size_limit = 1_000_000
-
-    for tx_id, (tx_value, tx) in mempool.items():
-        if validate_transaction(tx, mempool):
-            tx_size = len(json.dumps(tx))
-            if total_fees + tx_value <= BLOCK_REWARD and sum(len(json.dumps(tx)) for tx in selected_transactions) + tx_size <= block_size_limit:
-                selected_transactions.append(tx)
-                total_fees += tx_value
-
-    return selected_transactions
-
-def calculate_score(transactions: List[dict], total_fees: int) -> int:
-    """
-    Calculate the score based on the fee collected and the amount of available block space utilized.
-    """
-    total_size = sum(len(json.dumps(tx)) for tx in transactions)
-    block_size_limit = 1_000_000  # Assuming a block size limit of 1 MB
-
-    space_utilization_score = (total_size * 100 // block_size_limit)
-    fee_score = min(total_fees // 1000, 100)  # Cap the fee score to 100
-
-    score = space_utilization_score + fee_score
-    return score
-
-def build_mempool(mempool_dir: str) -> Dict[str, Tuple[int, Dict]]:
-    """
-    Build the mempool from the transaction files in the mempool directory.
-    """
-    mempool = {}
+# Load transactions from mempool directory
+def load_transactions(mempool_dir):
+    transactions = []
     for filename in os.listdir(mempool_dir):
         filepath = os.path.join(mempool_dir, filename)
-        with open(filepath, "r") as file:
-            transaction = json.load(file)
-            tx_id = double_sha256(json.dumps(transaction).encode()).hex()
-            tx_fee = sum(output.get("value", 0) for output in transaction.get("vout", []))
-            mempool[tx_id] = (tx_fee, transaction)
-    return mempool
+        with open(filepath, 'r') as file:
+            transactions.append(json.load(file))
+    return transactions
 
+# Write output to file
+def write_output(block_header, coinbase_tx, valid_transactions, output_file):
+    with open(output_file, 'w') as file:
+        file.write(block_header + '\n')
+        file.write(json.dumps(coinbase_tx) + '\n')
+        file.write('\n'.join(valid_transactions))
+
+# Main function
 def main():
-    # Load transactions from the mempool directory
-    mempool_dir = "mempool"
-    mempool = build_mempool(mempool_dir)
+    try:
+        difficulty_target = 0x0000ffff00000000000000000000000000000000000000000000000000000000
+        block_height = 1
 
-    # Select transactions for the new block
-    selected_transactions = select_transactions(mempool)
+        mempool_dir = 'mempool'
+        mempool_transactions = load_transactions(mempool_dir)
 
-    if not selected_transactions:
-        print("No valid transactions found in the mempool.")
-        return
+        prev_block_hash = '0' * 64
+        block_header, coinbase_tx, valid_transactions = mine_block(mempool_transactions, prev_block_hash, difficulty_target)
 
-    # Calculate the total fees for the coinbase transaction
-    total_fees = sum(tx_fee for tx_fee, _ in mempool.values())
+        output_file = 'output.txt'
+        write_output(block_header, coinbase_tx, valid_transactions, output_file)
 
-    # Mine the new block
-    prev_block_hash = "0" * 64  # Assuming a genesis block
-    block_hash, nonce, transaction_ids = mine_block(prev_block_hash, selected_transactions, total_fees)
+    except KeyboardInterrupt:
+        print("Mining interrupted. Exiting...")
+        sys.exit(0)
 
-    # Calculate the score
-    score = calculate_score(selected_transactions, total_fees)
-
-    # Write the output to output.txt
-    with open("output.txt", "w") as file:
-        file.write(block_hash + "\n")
-        coinbase_tx_id = transaction_ids[0]
-        file.write(coinbase_tx_id + "\n")  # Coinbase transaction ID
-        for txid in transaction_ids[1:]:
-            file.write(txid + "\n")
-
-    print(f"Block mined successfully! Score: {score}")
-    print(f"Nonce: {nonce}")
-    print(f"Coinbase Transaction ID: {coinbase_tx_id}")
-    print(f"Total Fees: {total_fees}")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
