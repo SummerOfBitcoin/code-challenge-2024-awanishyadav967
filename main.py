@@ -17,12 +17,16 @@ def validate_transaction(tx):
             return False
 
     # Implement additional validation rules as needed
-
     return True
 
 def hash_transaction(tx):
     """Hash a transaction using SHA-256"""
-    tx_string = json.dumps(tx, sort_keys=True).encode()
+    try:
+        tx_string = json.dumps(tx, sort_keys=True).encode()
+    except (TypeError, ValueError) as e:
+        print(f"Error serializing transaction: {e}")
+        return None
+
     return hashlib.sha256(tx_string).hexdigest()
 
 def mine_block(transactions):
@@ -33,19 +37,28 @@ def mine_block(transactions):
         "vout": [{"value": BLOCK_REWARD, "scriptPubKey": ""}]
     }
     coinbase_txid = hash_transaction(coinbase_tx)
-    serialized_coinbase = json.dumps(coinbase_tx).encode().hex()
+
+    try:
+        serialized_coinbase = json.dumps(coinbase_tx).encode().hex()
+    except (TypeError, ValueError) as e:
+        print(f"Error serializing coinbase transaction: {e}")
+        return
+
+    print(f"Serialized coinbase transaction: {serialized_coinbase}")
 
     # Start mining
     valid_transactions = [coinbase_txid]
     for tx in transactions:
         if validate_transaction(tx):
             txid = hash_transaction(tx)
-            valid_transactions.append(txid)
+            if txid:
+                valid_transactions.append(txid)
 
     # Write the block to the output file
     with open(OUTPUT_FILE, "w") as f:
         # Write serialized coinbase transaction
         f.write(serialized_coinbase + "\n")
+
         # Write transaction IDs
         for txid in valid_transactions:
             f.write(txid + "\n")
@@ -56,9 +69,12 @@ def main():
     transactions = []
     for filename in os.listdir(MEMPOOL_DIR):
         filepath = os.path.join(MEMPOOL_DIR, filename)
-        with open(filepath, "r") as file:
-            tx = json.load(file)
+        try:
+            with open(filepath, "r") as file:
+                tx = json.load(file)
             transactions.append(tx)
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"Error loading transaction from {filepath}: {e}")
 
     # Mine a new block
     mine_block(transactions)
