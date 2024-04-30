@@ -1,23 +1,11 @@
 import json
 import hashlib
 import os
-import time
-
 
 # Constants
-DIFFICULTY_TARGET = "0000ffff00000000000000000000000000000000000000000000000000000000"
 MEMPOOL_DIR = "mempool"
 OUTPUT_FILE = "output.txt"
 BLOCK_REWARD = 50 * 10**8  # 50 BTC in satoshis
-
-def calculate_merkle_root(transactions):
-    # Calculate merkle root hash
-    # You can implement a merkle tree algorithm here
-    # For simplicity, let's just concatenate and hash all transaction IDs
-    txids_bytes = [hash_transaction(tx).encode() for tx in transactions]  # Convert to bytes
-    merkle_root = hashlib.sha256(b"".join(sorted(txids_bytes))).hexdigest()
-    return merkle_root
-
 
 # Helper functions
 def validate_transaction(tx):
@@ -38,25 +26,7 @@ def hash_transaction(tx):
     return hashlib.sha256(tx_string).hexdigest()
 
 def mine_block(transactions):
-    # Calculate merkle root
-    merkle_root = calculate_merkle_root(transactions)
-
-    # Create a valid block header
-    block_header = {
-        "version": 1,
-        "prev_block_hash": "0000000000000000000000000000000000000000000000000000000000000000",  # Placeholder
-        "merkle_root_hash": merkle_root,
-        "timestamp": int(time.time()),
-        "nonce": 0
-    }
-
-    # Mine the block by finding a suitable nonce
-    while True:
-        block_header["nonce"] += 1
-        block_hash = hashlib.sha256(json.dumps(block_header, sort_keys=True).encode()).hexdigest()
-        if block_hash < DIFFICULTY_TARGET:
-            break
-
+    """Mine a new block with the given transactions"""
     # Serialize the coinbase transaction
     coinbase_tx = {
         "txid": "coinbase_tx",
@@ -74,8 +44,9 @@ def mine_block(transactions):
 
     # Write the block to the output file
     with open(OUTPUT_FILE, "w") as f:
-        f.write(json.dumps(block_header) + "\n")
+        # Write serialized coinbase transaction
         f.write(serialized_coinbase + "\n")
+        # Write transaction IDs
         for txid in valid_transactions:
             f.write(txid + "\n")
 
